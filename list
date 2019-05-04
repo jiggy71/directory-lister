@@ -1,0 +1,226 @@
+#!/usr/bin/env python3
+# directory lister
+
+import os, sys, pwd, grp, datetime
+
+SKLADNIA='list <ścieżka> [-w (rozmiar|wlasciciel|prawa) -s(r) (nazwa|rozmiar|wlasciciel)]'
+
+def Blad(przyczyna, sciezka=''):
+	bledy={'opcje': 'Błędne opcje polecenia. Składnia to:\n'+SKLADNIA,
+			'token': 'Nierozpoznana opcja. Dozwolone opcje to -w, -s, --wyswietl lub --sortuj',
+			'nie_katalog': '%s nie jest katalogiem' % sciezka,
+			'no_such_directory': 'Nie ma takiego katalogu: %s' % sciezka,
+			'no_entry': 'Brak dostępu do %s' % sciezka,
+			'unknown': 'Nieznany błąd. %s' % sciezka,
+			}
+	print(bledy[przyczyna])
+	sys.exit(-1)
+
+def ParsujOpcje (opcje):
+	"""Parsuje łańcuch <opcje>. zwraca wskaźniki SORTUJ i WYSWIETL w postaci list
+	składnia:
+	-w <n>azwa (domyślnie) - wyświetla tylko nazwę pliku lub katalogu
+	-w <r>ozmiar - nazwa + rozmiar pliku
+	-w <u>prawnienia - nazwa + drwxrwxrwx
+	-w <d>ata - nazwa + data modyfikacji
+	-w <w>łaściciel
+	parametry mogą być łączone (np. -w nud)
+
+	-s <n>azwa (domyślnie) - sortuje po nazwie
+	-s <r>ozmiar - po rozmiarze
+	-s <d>ata - po dacie modyfikacji
+	-s <w>łaściciel - po właścicielu
+	sortowanie po uprawnieniach jest chyba bez sensu, nie?
+	parametry określają kolejność sortowania, czyli np. -s dr posortuje najpierw po dacie, a potem po rozmiarze
+	litera 'r' po opcji powoduje sortowanie od tyłu (reversed)
+	"""
+	if len(opcje)==0:	#lista opcji jest pusta, więc zwracamy wartości domyślne
+		return ['nazwa', ], ['nazwa', ]
+	# lista opcji nie jest pusta, więc trzeba się nią zająć
+	
+	tokeny=('-w', '--wyswietl', '-s', '--sortuj')
+	komendy=[]	# lista list zawierająca poszczególne komendy i ich argumenty, np: [['-w', 'rozmiar'], ['-s', 'data', 'rozmiar']]
+	wyswietl=['nazwa']	# nazwę wyświetlamy zawsze - domyślnie
+	sortuj=['nazwa'] 
+	
+	if opcje[0] not in tokeny:
+		Blad('token')
+	
+	i=-1
+	for e in opcje:
+		if e in tokeny:	# trafiliśmy na komendę	
+			i+=1		# zwiększamy indeks listy komendy
+			komendy.append([]) # i dodajemy pustą listę
+		komendy[i].append(e)	# dopisujemy kolejne elementy komendy
+	
+	for komenda in komendy:
+		if len(komenda)<2:
+			Blad('opcje')
+		if komenda[0]=='-w' or komenda[0]=='--wyswietl':
+			for e in komenda[1:]:
+				if e=='rozmiar' or e=='wlasciciel' or e=='prawa' or e=='data':
+					wyswietl.append(e)
+				else:
+					Blad('opcje')
+		if komenda[0]=='-s' or komenda[0]=='--sortuj':
+			for e in komenda[1:]:
+				if e=='rozmiar' or e=='wlasciciel' or e=='data':
+					sortuj.append(e)
+				else:
+					Blad('opcje')		
+
+	return wyswietl, sortuj
+	
+def PobierzArgumenty():
+	"""Pobiera argumenty z linii poleceń - zwraca ścieżkę i listę opcji
+	"""
+	if len(sys.argv)<2:
+		sciezka=os.getcwd()	# jeśli ścieżka nie jest podana, to listujemy zawartość homedir
+	else:
+		sciezka=sys.argv[1]
+	
+	opcje=[]
+	for e in sys.argv[2:]:
+		opcje.append(e)
+	
+	return sciezka, opcje
+
+def ZbierzInfo(sciezka):
+	"""Zbiera informacje o katalogu <sciezka>.
+	Zwraca listę słowników <katalogi> i <pliki>
+	"""
+	def OkreslWlasciciela(uid, gid):
+		"""Na podstawie uid i gid zwraca nazwę właściciela i grupę
+		w formacie str
+		"""
+		return ':'.join((pwd.getpwuid(uid).pw_name, grp.getgrgid(gid).gr_name))
+	def ParsujUprawnienia(rights):
+		"""zwraca uprawnienia podane przez int<rights> w postaci str typu: rwx rw- rw-"""
+		rights=bin(rights)[-9:]
+		pattern='rwxrwxrwx'
+		u=''
+		for i in range(len(rights)):
+			u+=rights[i]=='1' and pattern[i] or '-'
+		return u
+	def ParsujDate(czas):
+		ti=datetime.datetime.fromtimestamp(czas)
+		return str(ti.date())+' %02d:%02d:%02d' % (ti.hour, ti.minute, ti.second)
+		
+		
+	try:
+		if os.path.isfile(sciezka):
+			Blad('nie_katalog', sciezka)
+		gen=os.scandir(sciezka)
+	except IOError as blad:
+		if 'Errno 2' in str(blad):
+			Blad('no_such_directory', sciezka)
+		elif 'Errno 13' in str(blad):
+			Blad('no_entry', sciezka)
+		else:
+			Blad('unknown', blad)
+		sys.exit(-1)
+	
+	katalogi=[]
+	pliki=[]
+
+	# poszczególne informacje o pliku/katalogu (nazwa, rozmiar, właściciel itp.) będą zapisywane jako elementy słownika
+	for elem in gen:
+		try:
+			czy_katalog=elem.is_dir()
+			nazwa=elem.name
+			rozmiar=elem.stat().st_size
+			wlasciciel=OkreslWlasciciela(elem.stat().st_uid, elem.stat().st_gid)
+			prawa=ParsujUprawnienia(elem.stat().st_mode)
+			data=ParsujDate(elem.stat().st_mtime)
+		except IOError as blad:
+			if 'Errno 13' in str(blad):
+				nazwa=elem.name + "!"
+		if czy_katalog:
+			katalogi.append({'nazwa':nazwa,
+							 'rozmiar':rozmiar,
+							 'wlasciciel':wlasciciel,
+							 'prawa':prawa,
+							 'data':data,
+							})
+		else:
+			pliki.append({'nazwa':nazwa,
+						  'rozmiar':rozmiar,
+						  'wlasciciel':wlasciciel,
+						  'prawa':prawa,
+						  'data':data,
+						 })
+	
+	return katalogi, pliki
+
+def Sortuj (katalogi, pliki, wzorzec):
+	"""sortuje listy <katalogi> i <pliki> zgodnie z parametrem str <wzorzec>
+	zwraca dwie listy
+	"""
+	def byKey(klucz):
+		def selector(d):
+			return d[klucz]
+		return selector
+	
+	for wz in wzorzec:
+		katalogi.sort(key=byKey(wz))
+		pliki.sort(key=byKey(wz))
+	
+	return katalogi, pliki
+
+def Wyswietl (katalog, katalogi, pliki, wyswietl, sortuj):
+	"""Wyświetla zawartość list <katalogi> i <pliki> zgodnie z zawartością <wyswietl>
+	"""
+	def Rozmiar(bajty):
+		"""Zwraca sformatowany rozmiar jako łańcuch
+		Dla bajty<1024 zwraca <bajty>
+		Dla bajty>1024 zwraca KB
+		potem MB, GB itd.
+		"""
+		if bajty<1024:
+			return '%s B' % str(bajty)
+		elif bajty<1024*1024:
+			return '%s KB' % str(bajty//1024)
+		elif bajty<1024*1024*1024:
+			return '%s MB' % str(bajty//(1024*1024))
+		else:
+			return '%s GB' % str(bajty//(1024*1024*1024))
+			
+	print ("Zawartość katalogu %s" % katalog)
+
+	if len(katalogi)==0 and len(pliki)==0:
+		print ("<PUSTY>")
+	else:
+		katalogi, pliki = Sortuj(katalogi, pliki, sortuj)
+		for e in katalogi:
+			print ("<DIR> ", end='')
+			for p in wyswietl:
+				if p=='nazwa':
+					print(e[p].ljust(23), end=' ')
+				elif p=='rozmiar':
+					print(Rozmiar(e[p]).rjust(8), end=' ')
+				elif p=='wlasciciel':
+					print(e[p].ljust(15), end=' ')
+				elif p=='prawa' or p=='data':
+					print('   '+e[p], end=' ')
+			print()
+		for e in pliki:
+			for p in wyswietl:
+				if p=='nazwa':
+					print(e[p].ljust(29), end=' ')
+				elif p=='rozmiar':
+					print(Rozmiar(e[p]).rjust(8), end=' ')
+				elif p=='wlasciciel':
+					print(e[p].ljust(15), end=' ')
+				elif p=='prawa' or p=='data':
+					print('   '+e[p], end=' ')
+			print()	
+	print ("Zawiera katalogów: %s i plików: %s" % (len(katalogi), len(pliki)))
+
+
+
+katalog, opcje = PobierzArgumenty()
+wyswietl, sortuj = ParsujOpcje(opcje)
+katalogi, pliki = ZbierzInfo (katalog)
+Wyswietl (katalog, katalogi, pliki, wyswietl, sortuj)
+
+
